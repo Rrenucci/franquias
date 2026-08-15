@@ -11,6 +11,7 @@ Depois abra http://localhost:8000
 import os
 import sys
 
+import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +29,9 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_KEY ausentes no .env")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 app = FastAPI(title="Franchise Intelligence API")
 app.add_middleware(
@@ -116,6 +120,10 @@ def recommend_endpoint(req: RecommendRequest):
             "brand_url": r.get("brand_url"),
             "investment_min": r["investment_min"],
             "investment_max": r["investment_max"],
+            "royalty_pct": r.get("royalty_pct"),
+            "payback_months_min": r.get("payback_months_min"),
+            "payback_months_max": r.get("payback_months_max"),
+            "units_count": r.get("units_count"),
             "score_total": r["score_total"],
             "score_investment_fit": r["score_investment_fit"],
             "score_city_demand": r["score_city_demand"],
@@ -123,6 +131,108 @@ def recommend_endpoint(req: RecommendRequest):
             "score_survival_risk": r["score_survival_risk"],
         } for r in results],
     }
+
+# ─── Chat — explica as recomendações, respondendo perguntas livres ──────────
+# Grounded no dado real: o system prompt carrega os números de verdade (cidade
+# + scores + payback/royalty/FAQ de cada franquia), e a instrução é pra Claude
+# nunca inventar número que não esteja ali.
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    city_id: str
+    investment: int
+    segment: str | None = None
+    question: str
+    history: list[ChatMessage] = []
+
+
+def build_grounding_context(city: dict, results: list[dict]) -> str:
+    lines = [
+        f"CIDADE: {city['name']} ({city['state_code']})",
+        f"- População: {city.get('population') or 'sem dado'}",
+        f"- Renda média per capita: R$ {city.get('avg_ticket_estimate')}" if city.get("avg_ticket_estimate") else "- Renda média per capita: sem dado",
+        f"- Poder de compra relativo ao estado (100 = média do estado): {city.get('purchasing_power_index')}" if city.get("purchasing_power_index") else "- Poder de compra relativo ao estado: sem dado",
+        f"- Saneamento adequado: {city.get('sanitation_pct')}%" if city.get("sanitation_pct") else "- Saneamento adequado: sem dado",
+        f"- Acesso à internet: {city.get('internet_access_pct')}%" if city.get("internet_access_pct") else "- Acesso à internet: sem dado",
+        f"- PIB per capita: R$ {city.get('gdp_per_capita')}" if city.get("gdp_per_capita") else "- PIB per capita: sem dado",
+        "",
+        f"FRANQUIAS RECOMENDADAS PARA ESSA CIDADE (ordenadas por score, {len(results)} no total):",
+    ]
+
+    franchise_ids = [r["id"] for r in results]
+    faq_by_id = {}
+    if franchise_ids:
+        faq_rows = supabase.table("franchises").select("id, faq_data").in_("id", franchise_ids).execute().data
+        faq_by_id = {row["id"]: row.get("faq_data") for row in faq_rows if row.get("faq_data")}
+
+    for i, r in enumerate(results, 1):
+        inv = f"R$ {r['investment_min']:,} - R$ {r['investment_max']:,}".replace(",", ".")
+        lines.append(f"\n{i}. {r['name']} — segmento {SEGMENT_LABELS.get(r['segment'], r['segment'])} — score total {r['score_total']}/100")
+        lines.append(f"   Investimento: {inv}")
+        lines.append(
+            f"   Scores (0-100): fit de investimento={r['score_investment_fit']}, "
+            f"demanda da cidade={r['score_city_demand']}, poder de compra={r['score_purchasing_power']}, "
+            f"sobrevida do segmento (baseado em mortalidade real de CNPJ na cidade)={r['score_survival_risk']}"
+        )
+        faq = faq_by_id.get(r["id"])
+        if faq:
+            relevant = [q for q in faq if any(k in q["question"].lower() for k in
+                        ["investimento", "taxas", "payback", "retorno", "lucratividade"])]
+            for q in relevant[:4]:
+                lines.append(f"   [Dado oficial da franquia] {q['question']}: {q['answer']}")
+        else:
+            lines.append("   [Sem dado de payback/royalties/lucratividade coletado para esta franquia ainda]")
+
+    return "\n".join(lines)
+
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    if claude is None:
+        raise HTTPException(status_code=503, detail="Chat indisponível: ANTHROPIC_API_KEY não configurada no servidor")
+
+    city_row = supabase.table("cities").select("*").eq("id", req.city_id).limit(1).execute().data
+    if not city_row:
+        raise HTTPException(status_code=404, detail="Cidade não encontrada")
+    city = city_row[0]
+
+    results = rec.recommend(supabase, city, req.investment, req.segment, 12)
+    context = build_grounding_context(city, results)
+
+    system_prompt = (
+        "Você é um consultor de dados do Franchise Intelligence, ajudando um investidor a entender "
+        "recomendações de franquias para uma cidade específica. Responda SOMENTE com base nos dados "
+        "fornecidos abaixo — nunca invente número, taxa, prazo ou fato que não esteja explicitamente "
+        "ali. Se o dado que a pessoa pediu não estiver disponível, diga claramente que não foi coletado "
+        "ainda, em vez de estimar. Seja direto e cite os números reais ao explicar o porquê de uma "
+        "recomendação. Responda em português do Brasil.\n\n" + context
+    )
+
+    messages = [{"role": m.role, "content": m.content} for m in req.history]
+    messages.append({"role": "user", "content": req.question})
+
+    try:
+        response = claude.beta.messages.create(
+            model="claude-opus-5",
+            max_tokens=1500,
+            system=system_prompt,
+            messages=messages,
+            thinking={"type": "adaptive"},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+        )
+    except anthropic.APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao consultar a IA: {e.message}")
+
+    if response.stop_reason == "refusal":
+        raise HTTPException(status_code=422, detail="A IA não conseguiu responder essa pergunta.")
+
+    answer = next((b.text for b in response.content if b.type == "text"), "")
+    return {"answer": answer}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

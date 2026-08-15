@@ -240,6 +240,95 @@
     padding: 40px 20px;
   }
 
+  /* Chat */
+  #chatSection { display: none; margin-top: 20px; }
+  #chatSection.open { display: block; }
+
+  .chat-card { padding: 0; overflow: hidden; }
+
+  .chat-header {
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--card-border);
+    font-weight: 700;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chat-header .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .chat-messages {
+    max-height: 420px;
+    overflow-y: auto;
+    padding: 18px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .chat-msg { max-width: 85%; line-height: 1.5; font-size: 0.9rem; white-space: pre-wrap; }
+  .chat-msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); padding: 10px 14px; border-radius: 12px 12px 2px 12px; }
+  .chat-msg.assistant { align-self: flex-start; color: var(--text); max-width: 92%; white-space: normal; }
+  .chat-msg.assistant::before { content: "●"; color: var(--accent); margin-right: 6px; font-size: 0.6rem; vertical-align: middle; }
+  .chat-msg.pending { color: var(--text-dim); font-style: italic; }
+  .chat-msg.assistant p { margin: 0 0 10px; }
+  .chat-msg.assistant p:last-child { margin-bottom: 0; }
+  .chat-msg.assistant h2, .chat-msg.assistant h3 { margin: 14px 0 8px; color: var(--text); }
+  .chat-msg.assistant h2:first-child, .chat-msg.assistant h3:first-child { margin-top: 0; }
+  .chat-msg.assistant strong { color: var(--accent); }
+  .chat-msg.assistant ul, .chat-msg.assistant ol { margin: 0 0 10px 20px; padding: 0; }
+  .chat-msg.assistant .table-wrap { overflow-x: auto; margin: 0 0 10px; }
+  .chat-msg.assistant table { border-collapse: collapse; font-size: 0.85rem; width: 100%; }
+  .chat-msg.assistant th, .chat-msg.assistant td { border: 1px solid var(--card-border); padding: 6px 10px; text-align: left; }
+  .chat-msg.assistant th { background: var(--accent-soft); }
+
+  .chat-suggestions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 0 22px 14px;
+  }
+
+  .chat-suggestion {
+    font-size: 0.78rem;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--bg-soft);
+    border: 1px solid var(--card-border);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .chat-suggestion:hover { border-color: var(--accent); color: var(--text); }
+
+  .chat-input-row {
+    display: flex;
+    gap: 10px;
+    padding: 14px 22px;
+    border-top: 1px solid var(--card-border);
+  }
+
+  .chat-input-row input {
+    flex: 1;
+  }
+
+  .chat-send {
+    background: var(--accent);
+    color: #06251b;
+    border: none;
+    border-radius: 10px;
+    padding: 0 18px;
+    font-weight: 700;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+
+  .chat-send:disabled { opacity: 0.5; cursor: default; }
+
   footer {
     text-align: center;
     color: var(--text-dim);
@@ -280,6 +369,18 @@
     <div id="status"></div>
     <div id="resultsHeader"></div>
     <div id="results"></div>
+
+    <div id="chatSection">
+      <div class="card chat-card">
+        <div class="chat-header"><span class="dot"></span> Pergunte sobre as recomendações</div>
+        <div class="chat-messages" id="chatMessages"></div>
+        <div class="chat-suggestions" id="chatSuggestions"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="Ex: por que a primeira opção tem esse score?">
+          <button class="chat-send" id="chatSend">Enviar</button>
+        </div>
+      </div>
+    </div>
 
     <footer>Dados: IBGE (Censo 2022), Guia de Franquias Associadas ABF, Receita Federal (CNPJ) — Franchise Intelligence</footer>
   </div>
@@ -440,11 +541,156 @@ function renderResults(data) {
       </div>
     </div>
   `).join("");
+
+  openChat(data);
 }
 
 function chip(label, value) {
   return `<span class="chip">${label}: <b>${value === null || value === undefined ? "n/d" : value}</b></span>`;
 }
+
+// ─── Chat ─────────────────────────────────────────────────────────────────
+
+let chatContext = null; // {city_id, investment, segment}
+let chatHistory = [];
+
+const chatSection = document.getElementById("chatSection");
+const chatMessagesEl = document.getElementById("chatMessages");
+const chatInput = document.getElementById("chatInput");
+const chatSendBtn = document.getElementById("chatSend");
+const chatSuggestionsEl = document.getElementById("chatSuggestions");
+
+const SUGGESTIONS = [
+  "Por que a franquia #1 tem esse score?",
+  "Qual delas tem menor risco de fechar?",
+  "Qual o payback esperado da primeira opção?",
+  "Compare as duas primeiras recomendações",
+];
+
+function openChat(data) {
+  chatContext = {
+    city_id: data.city.id,
+    investment: data.investment,
+    segment: document.getElementById("segment").value || null,
+  };
+  chatHistory = [];
+  chatMessagesEl.innerHTML = "";
+  chatSuggestionsEl.innerHTML = SUGGESTIONS.map(s => `<span class="chat-suggestion">${s}</span>`).join("");
+  for (const el of chatSuggestionsEl.querySelectorAll(".chat-suggestion")) {
+    el.addEventListener("click", () => { chatInput.value = el.textContent; sendChat(); });
+  }
+  chatSection.classList.add("open");
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderInline(s) {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+// Renderizador markdown mínimo, sem dependência externa — cobre só o que o
+// modelo realmente usa nas respostas do chat (títulos, negrito, listas, tabelas).
+function renderMarkdown(text) {
+  const lines = text.split("\n");
+  let html = "";
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (/^\|.*\|\s*$/.test(line) && lines[i + 1] && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      const rows = [line];
+      i += 2;
+      while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) { rows.push(lines[i]); i++; }
+      const cells = rows.map(r => r.replace(/^\||\|\s*$/g, "").split("|").map(c => c.trim()));
+      const [head, ...body] = cells;
+      html += '<div class="table-wrap"><table><thead><tr>' +
+        head.map(c => `<th>${renderInline(c)}</th>`).join("") + "</tr></thead><tbody>" +
+        body.map(r => "<tr>" + r.map(c => `<td>${renderInline(c)}</td>`).join("") + "</tr>").join("") +
+        "</tbody></table></div>";
+      continue;
+    }
+
+    if (/^###\s+/.test(line)) { html += `<h3>${renderInline(line.replace(/^###\s+/, ""))}</h3>`; i++; continue; }
+    if (/^##\s+/.test(line)) { html += `<h2>${renderInline(line.replace(/^##\s+/, ""))}</h2>`; i++; continue; }
+
+    if (/^[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^[-*]\s+/, "")); i++; }
+      html += "<ul>" + items.map(it => `<li>${renderInline(it)}</li>`).join("") + "</ul>";
+      continue;
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\d+\.\s+/, "")); i++; }
+      html += "<ol>" + items.map(it => `<li>${renderInline(it)}</li>`).join("") + "</ol>";
+      continue;
+    }
+
+    if (line.trim() === "") { i++; continue; }
+
+    const para = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() !== "" && !/^(#{2,3}\s|\||[-*]\s|\d+\.\s)/.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    html += `<p>${para.map(renderInline).join("<br>")}</p>`;
+  }
+  return html;
+}
+
+function appendChatMessage(role, text, pending) {
+  const div = document.createElement("div");
+  div.className = `chat-msg ${role}${pending ? " pending" : ""}`;
+  if (role === "assistant" && !pending) {
+    div.innerHTML = renderMarkdown(text);
+  } else {
+    div.textContent = text;
+  }
+  chatMessagesEl.appendChild(div);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  return div;
+}
+
+async function sendChat() {
+  const question = chatInput.value.trim();
+  if (!question || !chatContext) return;
+  chatInput.value = "";
+  chatSendBtn.disabled = true;
+
+  appendChatMessage("user", question);
+  const pendingEl = appendChatMessage("assistant", "Pensando...", true);
+
+  try {
+    const res = await fetch(`${API}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...chatContext,
+        question,
+        history: chatHistory,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Erro ${res.status}`);
+    }
+    const data = await res.json();
+    pendingEl.remove();
+    appendChatMessage("assistant", data.answer);
+    chatHistory.push({ role: "user", content: question });
+    chatHistory.push({ role: "assistant", content: data.answer });
+  } catch (err) {
+    pendingEl.remove();
+    appendChatMessage("assistant", "Erro: " + err.message);
+  } finally {
+    chatSendBtn.disabled = false;
+  }
+}
+
+chatSendBtn.addEventListener("click", sendChat);
+chatInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
 </script>
 </body>
 </html>
