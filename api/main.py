@@ -88,6 +88,26 @@ def search_cities(q: str):
     return rows
 
 
+def fetch_top_neighborhoods(city_id: str, limit: int = 6) -> list[dict]:
+    """Bairros com maior renda mediana do responsável — Censo 2022. Não
+    geocodifica endereço nenhum, só rankeia bairros nomeados da cidade."""
+    return (
+        supabase.table("neighborhoods")
+        .select("name, median_income, avg_income, residents_count")
+        .eq("city_id", city_id)
+        .not_.is_("median_income", "null")
+        .order("median_income", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+    )
+
+
+@app.get("/api/city/{city_id}/neighborhoods")
+def city_neighborhoods(city_id: str, limit: int = 10):
+    return fetch_top_neighborhoods(city_id, limit)
+
+
 @app.post("/api/recommend")
 def recommend_endpoint(req: RecommendRequest):
     city_row = supabase.table("cities").select("*").eq("id", req.city_id).limit(1).execute().data
@@ -109,6 +129,7 @@ def recommend_endpoint(req: RecommendRequest):
             "name": city["name"],
             "state_code": city["state_code"],
             "population": city.get("population"),
+            "top_neighborhoods": fetch_top_neighborhoods(city["id"]),
         },
         "investment": req.investment,
         "results": [{
@@ -195,9 +216,21 @@ def build_grounding_context(city: dict, results: list[dict]) -> str:
         f"- Saneamento adequado: {city.get('sanitation_pct')}%" if city.get("sanitation_pct") else "- Saneamento adequado: sem dado",
         f"- Acesso à internet: {city.get('internet_access_pct')}%" if city.get("internet_access_pct") else "- Acesso à internet: sem dado",
         f"- PIB per capita: R$ {city.get('gdp_per_capita')}" if city.get("gdp_per_capita") else "- PIB per capita: sem dado",
-        "",
-        f"FRANQUIAS RECOMENDADAS PARA ESSA CIDADE (ordenadas por score, {len(results)} no total):",
     ]
+
+    top_neighborhoods = fetch_top_neighborhoods(city["id"])
+    if top_neighborhoods:
+        lines.append(
+            "- Bairros com maior renda mediana do responsável pelo domicílio (Censo 2022, "
+            "IBGE — NÃO geocodifica endereço, só rankeia bairros nomeados da cidade por renda):"
+        )
+        for n in top_neighborhoods:
+            lines.append(f"    {n['name']}: mediana {brl(n['median_income'])}, média {brl(n['avg_income'])}, {n['residents_count']} moradores")
+    else:
+        lines.append("- Renda por bairro: sem dado pra essa cidade (IBGE só nomeia bairros em municípios com essa divisão oficial registrada)")
+
+    lines.append("")
+    lines.append(f"FRANQUIAS RECOMENDADAS PARA ESSA CIDADE (ordenadas por score, {len(results)} no total):")
 
     franchise_ids = [r["id"] for r in results]
     extra_by_id = {}
@@ -296,7 +329,11 @@ def chat_endpoint(req: ChatRequest):
         "recomendação. Não temos dado de presença por MARCA na cidade (se essa franquia específica já "
         "tem unidade ali) — se perguntarem isso, diga que não é possível verificar com os dados "
         "disponíveis e recomende que o investidor confirme direto com a franqueadora. O 'gap de mercado' "
-        "mede o segmento como um todo, nunca trate como se fosse sobre a marca específica. Responda em "
+        "mede o segmento como um todo, nunca trate como se fosse sobre a marca específica. Os bairros com "
+        "maior renda são um ranking por nome de bairro (Censo 2022) — NÃO geocodificamos endereço nenhum, "
+        "não sabemos em que bairro fica um ponto específico, e não temos dado de fluxo de pedestres/movimento "
+        "(isso exigiria API paga tipo Google Places, que não temos). Se perguntarem sobre um endereço, esquina "
+        "ou condomínio específico, diga que isso está fora do que os dados atuais cobrem. Responda em "
         "português do Brasil.\n\n" + context
     )
 
