@@ -69,6 +69,20 @@ log, header = base.log, base.header
 
 MIN_NAME_LEN = 5  # sem espaço — abaixo disso, risco de falso positivo é alto demais
 
+# Nomes de marca que SÃO (ou contêm só) uma palavra genérica do próprio
+# serviço/produto — o filtro de tamanho mínimo não pega isso, porque a
+# palavra pode ser longa e ainda assim genérica. Achado rodando de verdade
+# em 2026-08-15 e conferindo as amostras uma a uma:
+#   SÓBRANCELHAS -> 594 "matches", quase 100% falso positivo (qualquer salão
+#     independente de "design de sobrancelhas" bate — é o nome do serviço).
+#   SUCÃO -> 147 "matches", maioria falso positivo (bar/lanchonete/posto
+#     independente com o apelido "Sucão", nada a ver com a franquia —
+#     ex: "AUTO POSTO E LANCHONETE SUCAO", "CHURRASCARIA SUCAO DO MANE").
+# Confirmado por amostragem manual, não é chute — outras marcas de nome
+# comum mas mais distintivo (GIRAFFAS, SPOLETO, MONTANA GRILL) passaram na
+# mesma checagem sem problema.
+GENERIC_NAME_EXCLUSIONS = {"SÓBRANCELHAS", "SUCÃO"}
+
 CORPORATE_SUFFIXES = {"LTDA", "ME", "EIRELI", "EPP", "SA", "MEI", "COMERCIO", "COM", "IND", "SERVICOS"}
 
 
@@ -103,6 +117,9 @@ def load_franchises(supabase) -> list[dict]:
     rows = supabase.table("franchises").select("id, name, segment").eq("active", True).execute().data
     out = []
     for r in rows:
+        if r["name"] in GENERIC_NAME_EXCLUSIONS:
+            log(f"'{r['name']}' — nome genérico demais (confirmado por amostragem manual), pulando", "WARN")
+            continue
         norm = normalize_name(r["name"])
         compact = norm.replace(" ", "")
         if len(compact) < MIN_NAME_LEN:
