@@ -130,7 +130,36 @@ def recommend_endpoint(req: RecommendRequest):
             "score_purchasing_power": r["score_purchasing_power"],
             "score_survival_risk": r["score_survival_risk"],
             "score_market_gap": r["score_market_gap"],
+            "matched_model": r.get("matched_model"),
+            "matched_model_investment_min": r.get("matched_model_investment_min"),
+            "matched_model_investment_max": r.get("matched_model_investment_max"),
         } for r in results],
+    }
+
+
+@app.get("/api/franchise/{slug}")
+def franchise_detail(slug: str):
+    rows = supabase.table("franchises").select("*").eq("slug", slug).limit(1).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Franquia não encontrada")
+    f = rows[0]
+    return {
+        "name": f["name"],
+        "slug": f["slug"],
+        "segment": f["segment"],
+        "segment_label": SEGMENT_LABELS.get(f["segment"], f["segment"]),
+        "logo_url": f.get("logo_url"),
+        "brand_url": f.get("brand_url"),
+        "investment_min": f["investment_min"],
+        "investment_max": f["investment_max"],
+        "royalty_pct": f.get("royalty_pct"),
+        "payback_months_min": f.get("payback_months_min"),
+        "payback_months_max": f.get("payback_months_max"),
+        "units_count": f.get("units_count"),
+        "investment_models": f.get("investment_models"),
+        "investment_models_fetched_at": f.get("investment_models_fetched_at"),
+        "faq_data": f.get("faq_data"),
+        "faq_fetched_at": f.get("faq_fetched_at"),
     }
 
 # ─── Chat — explica as recomendações, respondendo perguntas livres ──────────
@@ -183,9 +212,12 @@ def build_grounding_context(city: dict, results: list[dict]) -> str:
         extra_by_id = {row["id"]: row for row in extra_rows}
 
     for i, r in enumerate(results, 1):
-        inv = f"R$ {r['investment_min']:,} - R$ {r['investment_max']:,}".replace(",", ".")
+        if r.get("matched_model"):
+            inv = f"{brl(r['matched_model_investment_min'])} a {brl(r['matched_model_investment_max'])} (modelo \"{r['matched_model']}\", o que melhor se encaixa no orçamento informado)"
+        else:
+            inv = f"R$ {r['investment_min']:,} - R$ {r['investment_max']:,} (faixa geral do catálogo, sem detalhe por modelo)".replace(",", ".")
         lines.append(f"\n{i}. {r['name']} — segmento {SEGMENT_LABELS.get(r['segment'], r['segment'])} — score total {r['score_total']}/100")
-        lines.append(f"   Investimento (faixa geral do catálogo): {inv}")
+        lines.append(f"   Investimento: {inv}")
         lines.append(
             f"   Scores (0-100): fit de investimento={r['score_investment_fit']}, "
             f"demanda da cidade={r['score_city_demand']}, poder de compra={r['score_purchasing_power']}, "

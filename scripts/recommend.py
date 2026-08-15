@@ -99,6 +99,40 @@ def score_investment_fit(budget: int, inv_min: int, inv_max: int) -> float:
     return max(60.0, 100.0 - excess_ratio * 20)
 
 
+def fetch_investment_models(supabase, franchise_ids: list[str]) -> dict[str, list[dict]]:
+    """{franchise_id: [investment_models]} — dado real por modelo de operação
+    (Loja, Home Based, Quiosque...), coletado por enrich_investment_models.py."""
+    if not franchise_ids:
+        return {}
+    rows = supabase.table("franchises").select("id, investment_models") \
+        .in_("id", franchise_ids).not_.is_("investment_models", "null").execute().data
+    return {r["id"]: r["investment_models"] for r in rows if r.get("investment_models")}
+
+
+def best_matching_model(budget: int, models: list[dict] | None) -> tuple[float, dict | None]:
+    """
+    Casa o orçamento contra CADA modelo de operação (não a faixa genérica
+    achatada) e devolve o score do melhor encaixe + qual modelo bateu — é
+    mais preciso do que "cabe em algum lugar entre R$ 9.800 e R$ 95.000",
+    que mistura Home Based com Loja como se fossem a mesma decisão.
+    """
+    if not models:
+        return None, None
+
+    best_score, best_model = -1.0, None
+    for m in models:
+        lo, hi = m.get("total_investment_min"), m.get("total_investment_max")
+        if lo is None or hi is None:
+            continue
+        s = score_investment_fit(budget, lo, hi)
+        if s > best_score:
+            best_score, best_model = s, m
+
+    if best_model is None:
+        return None, None
+    return best_score, best_model
+
+
 def score_city_demand(population: int | None) -> int | None:
     if not population:
         return None
@@ -182,8 +216,15 @@ def score_market_gap(city_density: float | None, benchmark_density: float | None
 
 
 def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment: dict[str, int],
-                    density_by_segment: dict[str, float], benchmarks: dict[str, float]) -> dict:
-    s_invest = score_investment_fit(budget, franchise["investment_min"], franchise["investment_max"])
+                    density_by_segment: dict[str, float], benchmarks: dict[str, float],
+                    models: list[dict] | None = None) -> dict:
+    model_score, matched_model = best_matching_model(budget, models)
+    if model_score is not None:
+        s_invest = model_score
+    else:
+        # sem investment_models pra essa franquia (6/187) — cai pra faixa achatada do catálogo
+        s_invest = score_investment_fit(budget, franchise["investment_min"], franchise["investment_max"])
+
     s_demand = score_city_demand(city.get("population"))
     s_power  = score_purchasing_power(city.get("purchasing_power_index"))
     s_survival = survival_by_segment.get(franchise["segment"])
@@ -201,6 +242,9 @@ def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment
         "score_city_growth":    None,  # sem fonte de dado ainda (population_growth_rate não é preenchido por nenhum importador)
         "score_competition":    None,  # precisaria de presença por marca — ver nota no topo do arquivo
         "score_total":          int(round(total)),
+        "matched_model":        matched_model.get("model") if matched_model else None,
+        "matched_model_investment_min": matched_model.get("total_investment_min") if matched_model else None,
+        "matched_model_investment_max": matched_model.get("total_investment_max") if matched_model else None,
     }
 
 # ─── Recomendação ─────────────────────────────────────────────────────────
@@ -217,10 +261,12 @@ def recommend(supabase, city: dict, budget: int, segment: str | None, top_n: int
     survival_by_segment = fetch_survival_by_segment(supabase, city["id"])
     density_by_segment = fetch_active_density_by_segment(supabase, city["id"], city.get("population"))
     benchmarks = fetch_density_benchmarks(supabase)
+    models_by_franchise = fetch_investment_models(supabase, [f["id"] for f in franchises])
 
     results = []
     for f in franchises:
-        scores = compute_scores(city, f, budget, survival_by_segment, density_by_segment, benchmarks)
+        scores = compute_scores(city, f, budget, survival_by_segment, density_by_segment, benchmarks,
+                                 models_by_franchise.get(f["id"]))
         results.append({**f, **scores})
 
     results.sort(key=lambda r: r["score_total"], reverse=True)
@@ -264,7 +310,10 @@ def print_results(city: dict, budget: int, results: list[dict]) -> None:
         return
 
     for i, r in enumerate(results, 1):
-        inv = f"R$ {r['investment_min']:,}-{r['investment_max']:,}".replace(",", ".")
+        if r.get("matched_model"):
+            inv = f"R$ {int(r['matched_model_investment_min']):,}-{int(r['matched_model_investment_max']):,} (modelo {r['matched_model']})".replace(",", ".")
+        else:
+            inv = f"R$ {r['investment_min']:,}-{r['investment_max']:,} (faixa geral, sem detalhe por modelo)".replace(",", ".")
         print(f"\n  {BOLD}{i}. {r['name']}{RESET}  {DIM}({r['segment']}){RESET}  —  score {GREEN}{r['score_total']}{RESET}/100")
         print(f"     Investimento: {inv}")
         breakdown = []
