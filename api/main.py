@@ -200,7 +200,7 @@ def build_grounding_context(city: dict, results: list[dict]) -> str:
         faq = extra.get("faq_data")
 
         if models:
-            lines.append("   [Dados oficiais de investimento, por modelo de operação, publicados pela franqueadora na ABF]")
+            lines.append("   [Dados de investimento por modelo, declarados pela franqueadora à ABF — NÃO auditados por nós; trate como piso de checagem, não como número garantido]")
             for m in models:
                 lines.append(f"     Modelo \"{m.get('model')}\":")
                 if m.get("total_investment_min") is not None:
