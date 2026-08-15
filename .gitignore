@@ -6,3 +6,5 @@ venv/
 node_modules/
 .next/
 .cnpj_progress_*.duckdb
+.brand_progress_*.duckdb
+.brand_progress_*.duckdb.wal
