@@ -14,13 +14,20 @@ Grava a busca em `searches` e o resultado em `recommendations` (histórico).
   score_city_growth   — precisa de population_growth_rate, que nenhum
                          importador preenche ainda (campo existe no schema,
                          mas sem fonte de dado plugada)
-  score_competition    — precisaria de presença por MARCA (essa franquia
-                         específica já tem unidade na cidade?), que não dá
-                         pra saber com o dado disponível hoje (o localizador
-                         de lojas da ABF não é público nas páginas raspadas).
-                         score_market_gap (abaixo) cobre densidade por
-                         SEGMENTO, que é o proxy possível com o dado real
-                         que temos — não confundir os dois.
+
+── score_competition (2026-08-15) ──────────────────────────────────────────
+  Presença da MARCA específica na cidade (não do segmento — isso é
+  score_market_gap). Vem de franchise_city_presence, cruzando nome_fantasia
+  da Receita Federal contra o nome da franquia (scripts/detect_brand_presence.py).
+  Ausência de linha NÃO prova ausência da franquia (nome_fantasia costuma
+  vir em branco) — por isso, sem match, o score fica NULL em vez de 100
+  ("provavelmente livre"), que seria um otimismo não sustentado pelo dado.
+  Com match: já ter uma unidade fechada aqui é o sinal mais forte que
+  existe (a marca específica já tentou e não deu certo NESSA cidade,
+  mais preciso que mortalidade de segmento) — pesa mais que só ter uma
+  unidade ativa (que é neutro/informativo, não necessariamente ruim, mas
+  levanta questão de exclusividade territorial pro investidor perguntar
+  à franqueadora).
 
 ── score_market_gap (2026-08-15) ──────────────────────────────────────────
   Densidade de empresas ATIVAS desse segmento na cidade (via
@@ -177,6 +184,36 @@ def fetch_survival_by_segment(supabase, city_id: str) -> dict[str, int]:
     return scores
 
 
+def fetch_brand_presence(supabase, city_id: str) -> dict[str, dict]:
+    """{franchise_id: {active, closed}} pra cidade — presença de MARCA
+    específica (não segmento), via franchise_city_presence."""
+    rows = supabase.table("franchise_city_presence").select("franchise_id, active_units_matched, closed_units_matched") \
+        .eq("city_id", city_id).execute().data
+    return {r["franchise_id"]: {"active": r["active_units_matched"], "closed": r["closed_units_matched"]} for r in rows}
+
+
+def score_competition(presence: dict | None) -> int | None:
+    """
+    Sem evidência (nenhuma linha em franchise_city_presence) -> None, não
+    100 — ausência de nome_fantasia batido não prova que a marca não está
+    lá, só que não achamos.
+    Já fechou aqui (mesmo com outra ativa) é o sinal mais forte de risco
+    que existe: ESSA marca específica já tentou e não deu certo NESSA
+    cidade. Só ativa, sem fechamento: neutro/informativo — não é
+    necessariamente ruim, mas levanta questão de exclusividade territorial.
+    """
+    if presence is None:
+        return None
+    active, closed = presence.get("active", 0) or 0, presence.get("closed", 0) or 0
+    if closed > 0 and active == 0:
+        return 25
+    if closed > 0 and active > 0:
+        return 30
+    if active > 0:
+        return 40
+    return None
+
+
 def fetch_density_benchmarks(supabase) -> dict[str, float]:
     """{segment: median_active_per_10k} — pré-calculado por compute_segment_benchmarks.py"""
     rows = supabase.table("segment_density_benchmark").select("segment, median_active_per_10k").execute().data
@@ -217,7 +254,7 @@ def score_market_gap(city_density: float | None, benchmark_density: float | None
 
 def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment: dict[str, int],
                     density_by_segment: dict[str, float], benchmarks: dict[str, float],
-                    models: list[dict] | None = None) -> dict:
+                    models: list[dict] | None = None, brand_presence: dict[str, dict] | None = None) -> dict:
     model_score, matched_model = best_matching_model(budget, models)
     if model_score is not None:
         s_invest = model_score
@@ -229,8 +266,10 @@ def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment
     s_power  = score_purchasing_power(city.get("purchasing_power_index"))
     s_survival = survival_by_segment.get(franchise["segment"])
     s_gap = score_market_gap(density_by_segment.get(franchise["segment"]), benchmarks.get(franchise["segment"]))
+    presence = (brand_presence or {}).get(franchise["id"])
+    s_competition = score_competition(presence)
 
-    available = [s for s in (s_invest, s_demand, s_power, s_survival, s_gap) if s is not None]
+    available = [s for s in (s_invest, s_demand, s_power, s_survival, s_gap, s_competition) if s is not None]
     total = round(sum(available) / len(available), 1) if available else 0.0
 
     return {
@@ -239,12 +278,14 @@ def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment
         "score_purchasing_power": s_power,
         "score_survival_risk":  s_survival,
         "score_market_gap":     s_gap,
+        "score_competition":    s_competition,
         "score_city_growth":    None,  # sem fonte de dado ainda (population_growth_rate não é preenchido por nenhum importador)
-        "score_competition":    None,  # precisaria de presença por marca — ver nota no topo do arquivo
         "score_total":          int(round(total)),
         "matched_model":        matched_model.get("model") if matched_model else None,
         "matched_model_investment_min": matched_model.get("total_investment_min") if matched_model else None,
         "matched_model_investment_max": matched_model.get("total_investment_max") if matched_model else None,
+        "brand_active_here":    (presence or {}).get("active", 0),
+        "brand_closed_here":    (presence or {}).get("closed", 0),
     }
 
 # ─── Recomendação ─────────────────────────────────────────────────────────
@@ -262,11 +303,12 @@ def recommend(supabase, city: dict, budget: int, segment: str | None, top_n: int
     density_by_segment = fetch_active_density_by_segment(supabase, city["id"], city.get("population"))
     benchmarks = fetch_density_benchmarks(supabase)
     models_by_franchise = fetch_investment_models(supabase, [f["id"] for f in franchises])
+    brand_presence = fetch_brand_presence(supabase, city["id"])
 
     results = []
     for f in franchises:
         scores = compute_scores(city, f, budget, survival_by_segment, density_by_segment, benchmarks,
-                                 models_by_franchise.get(f["id"]))
+                                 models_by_franchise.get(f["id"]), brand_presence)
         results.append({**f, **scores})
 
     results.sort(key=lambda r: r["score_total"], reverse=True)
@@ -316,12 +358,17 @@ def print_results(city: dict, budget: int, results: list[dict]) -> None:
             inv = f"R$ {r['investment_min']:,}-{r['investment_max']:,} (faixa geral, sem detalhe por modelo)".replace(",", ".")
         print(f"\n  {BOLD}{i}. {r['name']}{RESET}  {DIM}({r['segment']}){RESET}  —  score {GREEN}{r['score_total']}{RESET}/100")
         print(f"     Investimento: {inv}")
+        if r.get("brand_closed_here"):
+            print(f"     {YELLOW}⚠ já teve {r['brand_closed_here']} unidade(s) FECHADA(S) nesta cidade{RESET}")
+        elif r.get("brand_active_here"):
+            print(f"     {DIM}já tem {r['brand_active_here']} unidade(s) ativa(s) nesta cidade{RESET}")
         breakdown = []
         for label, key in [("fit investimento", "score_investment_fit"),
                             ("demanda cidade", "score_city_demand"),
                             ("poder de compra", "score_purchasing_power"),
                             ("sobrevida do segmento", "score_survival_risk"),
-                            ("gap de mercado", "score_market_gap")]:
+                            ("gap de mercado", "score_market_gap"),
+                            ("presença da marca", "score_competition")]:
             v = r[key]
             breakdown.append(f"{label}={v}" if v is not None else f"{label}=n/d")
         print(f"     {DIM}{' | '.join(breakdown)}{RESET}")

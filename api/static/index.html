@@ -228,6 +228,17 @@
 
   .score-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 
+  .brand-badge {
+    display: inline-block;
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
+  .brand-badge.brand-closed { background: rgba(240, 89, 107, 0.14); color: var(--danger); }
+  .brand-badge.brand-active { background: var(--bg-soft); color: var(--text-dim); border: 1px solid var(--card-border); }
+
   .chip {
     font-size: 0.72rem;
     padding: 4px 9px;
@@ -682,12 +693,14 @@ function renderResults(data) {
         <div class="name">${r.name}</div>
         <div class="segment">${r.segment_label}</div>
         <div class="investment">${investmentLine(r)}</div>
+        ${brandPresenceBadge(r)}
         <div class="score-chips">
           ${chip("Fit investimento", r.score_investment_fit)}
           ${chip("Demanda da cidade", r.score_city_demand)}
           ${chip("Poder de compra", r.score_purchasing_power)}
           ${chip("Sobrevida do segmento", r.score_survival_risk)}
           ${chip("Gap de mercado", r.score_market_gap)}
+          ${chip("Presença da marca", r.score_competition)}
         </div>
       </div>
       <div class="score-total">
@@ -718,6 +731,16 @@ function neighborhoodsCard(neighborhoods) {
         `).join("")}
       </div>
     </div>`;
+}
+
+function brandPresenceBadge(r) {
+  if (r.brand_closed_here) {
+    return `<div class="brand-badge brand-closed">⚠ já teve ${r.brand_closed_here} unidade(s) FECHADA(S) nesta cidade${r.brand_active_here ? ` (${r.brand_active_here} ativa(s) hoje)` : ""}</div>`;
+  }
+  if (r.brand_active_here) {
+    return `<div class="brand-badge brand-active">já tem ${r.brand_active_here} unidade(s) ativa(s) nesta cidade</div>`;
+  }
+  return "";
 }
 
 function investmentLine(r) {

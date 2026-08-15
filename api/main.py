@@ -151,6 +151,9 @@ def recommend_endpoint(req: RecommendRequest):
             "score_purchasing_power": r["score_purchasing_power"],
             "score_survival_risk": r["score_survival_risk"],
             "score_market_gap": r["score_market_gap"],
+            "score_competition": r["score_competition"],
+            "brand_active_here": r.get("brand_active_here", 0),
+            "brand_closed_here": r.get("brand_closed_here", 0),
             "matched_model": r.get("matched_model"),
             "matched_model_investment_min": r.get("matched_model_investment_min"),
             "matched_model_investment_max": r.get("matched_model_investment_max"),
@@ -256,9 +259,16 @@ def build_grounding_context(city: dict, results: list[dict]) -> str:
             f"demanda da cidade={r['score_city_demand']}, poder de compra={r['score_purchasing_power']}, "
             f"sobrevida do segmento (mortalidade real de CNPJ na cidade)={r['score_survival_risk']}, "
             f"gap de mercado (densidade de empresas ATIVAS do segmento na cidade vs. mediana nacional do "
-            f"segmento — mede oferta do SEGMENTO, não da marca; não sabemos se essa franquia específica já "
-            f"tem unidade aqui)={r['score_market_gap']}"
+            f"segmento — mede oferta do SEGMENTO, não da marca)={r['score_market_gap']}, "
+            f"presença da marca nesta cidade (via nome_fantasia da Receita Federal — se não tem "
+            f"score aqui, não achamos evidência, o que NÃO prova que a marca não está lá)={r['score_competition'] if r['score_competition'] is not None else 'sem evidência'}"
         )
+        brand_active, brand_closed = r.get("brand_active_here", 0), r.get("brand_closed_here", 0)
+        if brand_closed:
+            lines.append(f"   [ALERTA] Essa marca específica já teve {brand_closed} unidade(s) FECHADA(S) nesta cidade" +
+                         (f" (e tem {brand_active} ativa(s) hoje)" if brand_active else " — nenhuma ativa hoje") + ".")
+        elif brand_active:
+            lines.append(f"   Essa marca já tem {brand_active} unidade(s) ativa(s) nesta cidade — pergunte à franqueadora sobre exclusividade territorial.")
 
         extra = extra_by_id.get(r["id"], {})
         models = extra.get("investment_models")
@@ -326,10 +336,13 @@ def chat_endpoint(req: ChatRequest):
         "fornecidos abaixo — nunca invente número, taxa, prazo ou fato que não esteja explicitamente "
         "ali. Se o dado que a pessoa pediu não estiver disponível, diga claramente que não foi coletado "
         "ainda, em vez de estimar. Seja direto e cite os números reais ao explicar o porquê de uma "
-        "recomendação. Não temos dado de presença por MARCA na cidade (se essa franquia específica já "
-        "tem unidade ali) — se perguntarem isso, diga que não é possível verificar com os dados "
-        "disponíveis e recomende que o investidor confirme direto com a franqueadora. O 'gap de mercado' "
-        "mede o segmento como um todo, nunca trate como se fosse sobre a marca específica. Os bairros com "
+        "recomendação. Presença de MARCA na cidade (se essa franquia específica já tem/teve unidade ali) "
+        "vem de cruzar nome_fantasia da Receita Federal — quando aparece um alerta de unidade fechada ou "
+        "ativa nos dados de uma franquia, use isso ativamente na explicação, é o sinal mais específico que "
+        "existe. Mas se NÃO aparecer nada, isso não prova que a marca não está na cidade — nome_fantasia "
+        "costuma vir em branco nos dados da Receita, então diga que não achamos evidência, não que "
+        "'definitivamente não tem'. O 'gap de mercado' mede o segmento como um todo, nunca trate como se "
+        "fosse sobre a marca específica — são eixos diferentes. Os bairros com "
         "maior renda são um ranking por nome de bairro (Censo 2022) — NÃO geocodificamos endereço nenhum, "
         "não sabemos em que bairro fica um ponto específico, e não temos dado de fluxo de pedestres/movimento "
         "(isso exigiria API paga tipo Google Places, que não temos). Se perguntarem sobre um endereço, esquina "
@@ -343,7 +356,7 @@ def chat_endpoint(req: ChatRequest):
     try:
         response = claude.beta.messages.create(
             model="claude-opus-5",
-            max_tokens=1500,
+            max_tokens=3000,
             system=system_prompt,
             messages=messages,
             thinking={"type": "adaptive"},
