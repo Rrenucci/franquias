@@ -150,6 +150,12 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
 
 
+def brl(value) -> str:
+    if value is None:
+        return "sem dado"
+    return f"R$ {value:,.0f}".replace(",", ".")
+
+
 def build_grounding_context(city: dict, results: list[dict]) -> str:
     lines = [
         f"CIDADE: {city['name']} ({city['state_code']})",
@@ -164,28 +170,70 @@ def build_grounding_context(city: dict, results: list[dict]) -> str:
     ]
 
     franchise_ids = [r["id"] for r in results]
-    faq_by_id = {}
+    extra_by_id = {}
     if franchise_ids:
-        faq_rows = supabase.table("franchises").select("id, faq_data").in_("id", franchise_ids).execute().data
-        faq_by_id = {row["id"]: row.get("faq_data") for row in faq_rows if row.get("faq_data")}
+        extra_rows = (
+            supabase.table("franchises")
+            .select("id, faq_data, investment_models")
+            .in_("id", franchise_ids)
+            .execute()
+            .data
+        )
+        extra_by_id = {row["id"]: row for row in extra_rows}
 
     for i, r in enumerate(results, 1):
         inv = f"R$ {r['investment_min']:,} - R$ {r['investment_max']:,}".replace(",", ".")
         lines.append(f"\n{i}. {r['name']} — segmento {SEGMENT_LABELS.get(r['segment'], r['segment'])} — score total {r['score_total']}/100")
-        lines.append(f"   Investimento: {inv}")
+        lines.append(f"   Investimento (faixa geral do catálogo): {inv}")
         lines.append(
             f"   Scores (0-100): fit de investimento={r['score_investment_fit']}, "
             f"demanda da cidade={r['score_city_demand']}, poder de compra={r['score_purchasing_power']}, "
             f"sobrevida do segmento (baseado em mortalidade real de CNPJ na cidade)={r['score_survival_risk']}"
         )
-        faq = faq_by_id.get(r["id"])
+
+        extra = extra_by_id.get(r["id"], {})
+        models = extra.get("investment_models")
+        faq = extra.get("faq_data")
+
+        if models:
+            lines.append("   [Dados oficiais de investimento, por modelo de operação, publicados pela franqueadora na ABF]")
+            for m in models:
+                lines.append(f"     Modelo \"{m.get('model')}\":")
+                if m.get("total_investment_min") is not None:
+                    lines.append(f"       Investimento total: {brl(m['total_investment_min'])} a {brl(m['total_investment_max'])}")
+                if m.get("franchise_fee") is not None:
+                    lines.append(f"       Taxa de franquia: {brl(m['franchise_fee'])}")
+                if m.get("payback_months_min") is not None:
+                    lines.append(f"       Payback (retorno do investimento): {m['payback_months_min']} a {m['payback_months_max']} meses")
+                if m.get("avg_monthly_revenue") is not None:
+                    lines.append(f"       Faturamento médio mensal declarado: {brl(m['avg_monthly_revenue'])}")
+                royalty = m.get("royalty_fee") or {}
+                if royalty.get("type") == "percent":
+                    lines.append(f"       Royalties: {royalty['value']}% (base: {royalty.get('base', 'não especificada')})")
+                elif royalty.get("type") == "fixed_brl":
+                    lines.append(f"       Royalties: {brl(royalty['value'])} fixo (base: {royalty.get('base', 'não especificada')})")
+                elif royalty.get("type") == "none":
+                    lines.append("       Royalties: não cobra")
+                marketing = m.get("marketing_fee") or {}
+                if marketing.get("type") == "percent":
+                    lines.append(f"       Taxa de propaganda: {marketing['value']}% (base: {marketing.get('base', 'não especificada')})")
+                elif marketing.get("type") == "fixed_brl":
+                    lines.append(f"       Taxa de propaganda: {brl(marketing['value'])} fixo (base: {marketing.get('base', 'não especificada')})")
+                elif marketing.get("type") == "none":
+                    lines.append("       Taxa de propaganda: não cobra")
+                if m.get("units_count") is not None:
+                    lines.append(f"       Unidades em operação (nesse modelo): {m['units_count']}")
+                if m.get("hq_state"):
+                    lines.append(f"       Sede da franqueadora: {m['hq_state']}")
+
         if faq:
             relevant = [q for q in faq if any(k in q["question"].lower() for k in
-                        ["investimento", "taxas", "payback", "retorno", "lucratividade"])]
-            for q in relevant[:4]:
-                lines.append(f"   [Dado oficial da franquia] {q['question']}: {q['answer']}")
-        else:
-            lines.append("   [Sem dado de payback/royalties/lucratividade coletado para esta franquia ainda]")
+                        ["lucratividade", "margem"])]
+            for q in relevant[:2]:
+                lines.append(f"   [Dado oficial da franquia, FAQ] {q['question']}: {q['answer']}")
+
+        if not models and not faq:
+            lines.append("   [Sem dado de payback/royalties/faturamento coletado para esta franquia ainda — não estime, diga que não foi coletado]")
 
     return "\n".join(lines)
 
