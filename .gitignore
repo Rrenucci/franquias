@@ -5,3 +5,4 @@ __pycache__/
 venv/
 node_modules/
 .next/
+.cnpj_progress_*.duckdb

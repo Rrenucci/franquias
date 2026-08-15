@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Franchise Intelligence — Encontre a franquia certa pra sua cidade</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --bg-soft: #121b2e;
+    --card: #16213a;
+    --card-border: #23304d;
+    --text: #eef1f8;
+    --text-dim: #9aa5bd;
+    --accent: #34d399;
+    --accent-dim: #1f6d55;
+    --accent-soft: rgba(52, 211, 153, 0.12);
+    --warn: #f5a623;
+    --danger: #f0596b;
+    --radius: 14px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background: radial-gradient(circle at top, #14213d 0%, var(--bg) 55%);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; }
+
+  header.hero { text-align: center; margin-bottom: 40px; }
+
+  .eyebrow {
+    display: inline-block;
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 6px 14px;
+    border-radius: 999px;
+    margin-bottom: 18px;
+    font-weight: 600;
+  }
+
+  h1 {
+    font-size: clamp(1.9rem, 4vw, 2.6rem);
+    margin: 0 0 12px;
+    letter-spacing: -0.02em;
+  }
+
+  .sub {
+    color: var(--text-dim);
+    font-size: 1.05rem;
+    max-width: 560px;
+    margin: 0 auto;
+    line-height: 1.5;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 28px;
+  }
+
+  form.card { margin-bottom: 32px; }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 1.2fr 1.4fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  @media (max-width: 720px) {
+    .field-row { grid-template-columns: 1fr; }
+  }
+
+  label {
+    display: block;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+
+  input, select {
+    width: 100%;
+    background: var(--bg-soft);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+  }
+
+  input::placeholder { color: #5b6a8c; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .city-field { position: relative; }
+
+  .city-suggestions {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0; right: 0;
+    background: var(--bg-soft);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    overflow: hidden;
+    z-index: 10;
+    max-height: 240px;
+    overflow-y: auto;
+    display: none;
+  }
+
+  .city-suggestions.open { display: block; }
+
+  .city-suggestion {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .city-suggestion:hover, .city-suggestion.active { background: var(--accent-soft); }
+  .city-suggestion .pop { color: var(--text-dim); font-size: 0.78rem; }
+
+  button.submit {
+    width: 100%;
+    background: var(--accent);
+    color: #06251b;
+    border: none;
+    border-radius: 10px;
+    padding: 14px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+
+  button.submit:hover { filter: brightness(1.08); }
+  button.submit:disabled { opacity: 0.6; cursor: default; }
+
+  #status {
+    text-align: center;
+    color: var(--text-dim);
+    margin: 18px 0;
+    font-size: 0.9rem;
+    min-height: 1.2em;
+  }
+
+  #status.error { color: var(--danger); }
+
+  .results-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 32px 0 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .results-header h2 { font-size: 1.1rem; margin: 0; }
+  .results-header .meta { color: var(--text-dim); font-size: 0.85rem; }
+
+  .result-card {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 20px;
+    align-items: center;
+    padding: 20px 24px;
+    margin-bottom: 12px;
+  }
+
+  @media (max-width: 640px) {
+    .result-card { grid-template-columns: 1fr; text-align: left; }
+  }
+
+  .rank {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    background: var(--bg-soft);
+    border-radius: 8px;
+    width: 30px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .result-main .name { font-size: 1.08rem; font-weight: 700; margin-bottom: 2px; }
+  .result-main .segment { color: var(--accent); font-size: 0.8rem; font-weight: 600; margin-bottom: 8px; }
+  .result-main .investment { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 10px; }
+
+  .score-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .chip {
+    font-size: 0.72rem;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--text-dim);
+    border: 1px solid var(--card-border);
+  }
+
+  .chip b { color: var(--text); }
+
+  .score-total {
+    text-align: center;
+    min-width: 74px;
+  }
+
+  .score-total .num {
+    font-size: 1.7rem;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .score-total .label {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .score-good { color: var(--accent); }
+  .score-mid { color: var(--warn); }
+  .score-low { color: var(--danger); }
+
+  .empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px 20px;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    margin-top: 56px;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <span class="eyebrow">Franchise Intelligence</span>
+      <h1>Qual franquia faz sentido pra sua cidade?</h1>
+      <p class="sub">Cruzamos dados reais do IBGE, poder de compra local e mortalidade de empresas por CNPJ pra recomendar franquias com mais chance de dar certo onde você quer investir.</p>
+    </header>
+
+    <form class="card" id="form">
+      <div class="field-row">
+        <div>
+          <label for="investment">Quanto você tem pra investir</label>
+          <input type="text" id="investment" inputmode="numeric" placeholder="R$ 150.000" required>
+        </div>
+        <div class="city-field">
+          <label for="city">Cidade</label>
+          <input type="text" id="city" placeholder="Digite o nome da cidade" autocomplete="off" required>
+          <div class="city-suggestions" id="citySuggestions"></div>
+        </div>
+        <div>
+          <label for="segment">Segmento (opcional)</label>
+          <select id="segment">
+            <option value="">Todos os segmentos</option>
+          </select>
+        </div>
+      </div>
+      <button type="submit" class="submit" id="submitBtn">Recomendar franquias</button>
+    </form>
+
+    <div id="status"></div>
+    <div id="resultsHeader"></div>
+    <div id="results"></div>
+
+    <footer>Dados: IBGE (Censo 2022), Guia de Franquias Associadas ABF, Receita Federal (CNPJ) — Franchise Intelligence</footer>
+  </div>
+
+<script>
+const API = "";
+let selectedCity = null;
+
+async function loadSegments() {
+  const res = await fetch(`${API}/api/segments`);
+  const segments = await res.json();
+  const select = document.getElementById("segment");
+  for (const s of segments) {
+    const opt = document.createElement("option");
+    opt.value = s.value;
+    opt.textContent = s.label;
+    select.appendChild(opt);
+  }
+}
+loadSegments();
+
+const cityInput = document.getElementById("city");
+const suggestionsBox = document.getElementById("citySuggestions");
+let debounceTimer = null;
+
+cityInput.addEventListener("input", () => {
+  selectedCity = null;
+  clearTimeout(debounceTimer);
+  const q = cityInput.value.trim();
+  if (q.length < 2) { suggestionsBox.classList.remove("open"); return; }
+  debounceTimer = setTimeout(async () => {
+    const res = await fetch(`${API}/api/cities?q=${encodeURIComponent(q)}`);
+    const cities = await res.json();
+    renderSuggestions(cities);
+  }, 200);
+});
+
+function renderSuggestions(cities) {
+  suggestionsBox.innerHTML = "";
+  if (!cities.length) { suggestionsBox.classList.remove("open"); return; }
+  for (const c of cities) {
+    const div = document.createElement("div");
+    div.className = "city-suggestion";
+    div.innerHTML = `<span>${c.name} (${c.state_code})</span><span class="pop">${c.population ? c.population.toLocaleString("pt-BR") + " hab." : ""}</span>`;
+    div.addEventListener("click", () => {
+      selectedCity = c;
+      cityInput.value = `${c.name} (${c.state_code})`;
+      suggestionsBox.classList.remove("open");
+    });
+    suggestionsBox.appendChild(div);
+  }
+  suggestionsBox.classList.add("open");
+}
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".city-field")) suggestionsBox.classList.remove("open");
+});
+
+const investmentInput = document.getElementById("investment");
+investmentInput.addEventListener("input", () => {
+  const digits = investmentInput.value.replace(/\D/g, "");
+  investmentInput.value = digits ? "R$ " + Number(digits).toLocaleString("pt-BR") : "";
+});
+
+function scoreClass(score) {
+  if (score >= 70) return "score-good";
+  if (score >= 45) return "score-mid";
+  return "score-low";
+}
+
+function fmtMoney(v) {
+  return "R$ " + Number(v).toLocaleString("pt-BR");
+}
+
+document.getElementById("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("status");
+  const resultsEl = document.getElementById("results");
+  const headerEl = document.getElementById("resultsHeader");
+  const submitBtn = document.getElementById("submitBtn");
+
+  const investment = Number(investmentInput.value.replace(/\D/g, ""));
+  if (!selectedCity) {
+    statusEl.textContent = "Escolhe uma cidade da lista de sugestões.";
+    statusEl.className = "error";
+    return;
+  }
+  if (!investment) {
+    statusEl.textContent = "Informa o valor do investimento.";
+    statusEl.className = "error";
+    return;
+  }
+
+  submitBtn.disabled = true;
+  statusEl.className = "";
+  statusEl.textContent = "Calculando recomendações...";
+  resultsEl.innerHTML = "";
+  headerEl.innerHTML = "";
+
+  try {
+    const res = await fetch(`${API}/api/recommend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        city_id: selectedCity.id,
+        investment,
+        segment: document.getElementById("segment").value || null,
+        top: 12,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Erro ${res.status}`);
+    }
+    const data = await res.json();
+    statusEl.textContent = "";
+    renderResults(data);
+  } catch (err) {
+    statusEl.textContent = "Erro: " + err.message;
+    statusEl.className = "error";
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+function renderResults(data) {
+  const headerEl = document.getElementById("resultsHeader");
+  const resultsEl = document.getElementById("results");
+
+  headerEl.innerHTML = `
+    <div class="results-header">
+      <h2>${data.results.length} franquia${data.results.length === 1 ? "" : "s"} recomendada${data.results.length === 1 ? "" : "s"} para ${data.city.name} (${data.city.state_code})</h2>
+      <span class="meta">Investimento informado: ${fmtMoney(data.investment)}</span>
+    </div>`;
+
+  if (!data.results.length) {
+    resultsEl.innerHTML = `<div class="card empty">Nenhuma franquia encontrada com esses filtros. Tenta outro segmento ou um valor diferente.</div>`;
+    return;
+  }
+
+  resultsEl.innerHTML = data.results.map((r, i) => `
+    <div class="card result-card">
+      <div class="rank">${i + 1}</div>
+      <div class="result-main">
+        <div class="name">${r.name}</div>
+        <div class="segment">${r.segment_label}</div>
+        <div class="investment">Investimento: ${fmtMoney(r.investment_min)} – ${fmtMoney(r.investment_max)}</div>
+        <div class="score-chips">
+          ${chip("Fit investimento", r.score_investment_fit)}
+          ${chip("Demanda da cidade", r.score_city_demand)}
+          ${chip("Poder de compra", r.score_purchasing_power)}
+          ${chip("Sobrevida do segmento", r.score_survival_risk)}
+        </div>
+      </div>
+      <div class="score-total">
+        <div class="num ${scoreClass(r.score_total)}">${r.score_total}</div>
+        <div class="label">score</div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function chip(label, value) {
+  return `<span class="chip">${label}: <b>${value === null || value === undefined ? "n/d" : value}</b></span>`;
+}
+</script>
+</body>
+</html>

@@ -23,6 +23,10 @@ import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 load_dotenv()
 
 # ─── Configuração ────────────────────────────────────────────────────────────
@@ -111,14 +115,17 @@ def parse_municipality(m: dict) -> dict:
     except (KeyError, TypeError):
         uf = regiao = {}
 
+    microrregiao = m.get("microrregiao") or {}
+    mesorregiao  = microrregiao.get("mesorregiao") or {}
+
     return {
         "ibge_code":   str(m["id"]),
         "name":        m["nome"],
         "state_code":  uf.get("sigla", ""),
         "state_name":  uf.get("nome", ""),
         "region":      regiao.get("nome", ""),
-        "mesoregion":  m.get("microrregiao", {}).get("mesorregiao", {}).get("nome"),
-        "microregion": m.get("microrregiao", {}).get("nome"),
+        "mesoregion":  mesorregiao.get("nome"),
+        "microregion": microrregiao.get("nome"),
         "data_year":   2022,
     }
 

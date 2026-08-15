@@ -124,8 +124,8 @@ CREATE INDEX IF NOT EXISTS idx_city_seg_city      ON city_segments(city_id);
 CREATE INDEX IF NOT EXISTS idx_searches_city      ON searches(city_id);
 CREATE INDEX IF NOT EXISTS idx_searches_created   ON searches(created_at DESC);
 
+-- Habilitar extensão para busca por similaridade (precisa vir antes do índice trgm abaixo)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 -- Busca textual por nome de cidade
 CREATE INDEX IF NOT EXISTS idx_cities_name_trgm ON cities USING gin(name gin_trgm_ops);
-
--- Habilitar extensão para busca por similaridade (execute se não estiver ativa)
--- CREATE EXTENSION IF NOT EXISTS pg_trgm;
