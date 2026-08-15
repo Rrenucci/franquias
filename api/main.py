@@ -129,6 +129,7 @@ def recommend_endpoint(req: RecommendRequest):
             "score_city_demand": r["score_city_demand"],
             "score_purchasing_power": r["score_purchasing_power"],
             "score_survival_risk": r["score_survival_risk"],
+            "score_market_gap": r["score_market_gap"],
         } for r in results],
     }
 
@@ -188,7 +189,10 @@ def build_grounding_context(city: dict, results: list[dict]) -> str:
         lines.append(
             f"   Scores (0-100): fit de investimento={r['score_investment_fit']}, "
             f"demanda da cidade={r['score_city_demand']}, poder de compra={r['score_purchasing_power']}, "
-            f"sobrevida do segmento (baseado em mortalidade real de CNPJ na cidade)={r['score_survival_risk']}"
+            f"sobrevida do segmento (mortalidade real de CNPJ na cidade)={r['score_survival_risk']}, "
+            f"gap de mercado (densidade de empresas ATIVAS do segmento na cidade vs. mediana nacional do "
+            f"segmento — mede oferta do SEGMENTO, não da marca; não sabemos se essa franquia específica já "
+            f"tem unidade aqui)={r['score_market_gap']}"
         )
 
         extra = extra_by_id.get(r["id"], {})
@@ -257,7 +261,11 @@ def chat_endpoint(req: ChatRequest):
         "fornecidos abaixo — nunca invente número, taxa, prazo ou fato que não esteja explicitamente "
         "ali. Se o dado que a pessoa pediu não estiver disponível, diga claramente que não foi coletado "
         "ainda, em vez de estimar. Seja direto e cite os números reais ao explicar o porquê de uma "
-        "recomendação. Responda em português do Brasil.\n\n" + context
+        "recomendação. Não temos dado de presença por MARCA na cidade (se essa franquia específica já "
+        "tem unidade ali) — se perguntarem isso, diga que não é possível verificar com os dados "
+        "disponíveis e recomende que o investidor confirme direto com a franqueadora. O 'gap de mercado' "
+        "mede o segmento como um todo, nunca trate como se fosse sobre a marca específica. Responda em "
+        "português do Brasil.\n\n" + context
     )
 
     messages = [{"role": m.role, "content": m.content} for m in req.history]

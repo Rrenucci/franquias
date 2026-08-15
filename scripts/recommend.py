@@ -14,11 +14,22 @@ Grava a busca em `searches` e o resultado em `recommendations` (histórico).
   score_city_growth   — precisa de population_growth_rate, que nenhum
                          importador preenche ainda (campo existe no schema,
                          mas sem fonte de dado plugada)
-  score_competition    ─┐
-  score_market_gap      │ dependem de `city_segments` (densidade de empresas
-  score_survival_risk  ─┘ por segmento) e `company_lifecycle` (mortalidade de
-                         CNPJ) — nenhuma das duas tabelas tem dado ainda.
-                         Ver scripts/import_cnpj_lifecycle.py.
+  score_competition    — precisaria de presença por MARCA (essa franquia
+                         específica já tem unidade na cidade?), que não dá
+                         pra saber com o dado disponível hoje (o localizador
+                         de lojas da ABF não é público nas páginas raspadas).
+                         score_market_gap (abaixo) cobre densidade por
+                         SEGMENTO, que é o proxy possível com o dado real
+                         que temos — não confundir os dois.
+
+── score_market_gap (2026-08-15) ──────────────────────────────────────────
+  Densidade de empresas ATIVAS desse segmento na cidade (via
+  company_lifecycle, CNPJ real) comparada à mediana nacional pra esse
+  segmento (scripts/compute_segment_benchmarks.py). Cidade com poucas
+  empresas do segmento pro tamanho dela = score alto (mercado desatendido);
+  cidade saturada = score baixo. É sinal de OFERTA, não de marca — não diz
+  se a Cacau Show específica já está lá, só se "alimentação" já está
+  concentrado ali.
 
 score_total é a média dos eixos que TÊM dado (não penaliza por eixo
 faltando — evita que toda recomendação pareça ruim só porque a parte de
@@ -132,13 +143,53 @@ def fetch_survival_by_segment(supabase, city_id: str) -> dict[str, int]:
     return scores
 
 
-def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment: dict[str, int]) -> dict:
+def fetch_density_benchmarks(supabase) -> dict[str, float]:
+    """{segment: median_active_per_10k} — pré-calculado por compute_segment_benchmarks.py"""
+    rows = supabase.table("segment_density_benchmark").select("segment, median_active_per_10k").execute().data
+    return {r["segment"]: r["median_active_per_10k"] for r in rows if r.get("median_active_per_10k")}
+
+
+def fetch_active_density_by_segment(supabase, city_id: str, population: int | None) -> dict[str, float]:
+    """{segment: active_per_10k} pra cidade — soma active_count de todas as CNAEs do segmento."""
+    if not population:
+        return {}
+    rows = supabase.table("company_lifecycle").select("segment, active_count") \
+        .eq("city_id", city_id).not_.is_("active_count", "null").execute().data
+
+    totals: dict[str, int] = {}
+    for r in rows:
+        seg = r.get("segment")
+        if not seg:
+            continue
+        totals[seg] = totals.get(seg, 0) + (r.get("active_count") or 0)
+
+    return {seg: total / population * 10000 for seg, total in totals.items()}
+
+
+def score_market_gap(city_density: float | None, benchmark_density: float | None) -> int | None:
+    """
+    Ratio = densidade da cidade / mediana nacional pro segmento.
+    ratio=0 (nenhuma empresa do segmento) -> 100 (mercado desatendido)
+    ratio=1 (na média nacional)           -> 50
+    ratio>=2 (o dobro da densidade típica) -> 0 (saturado)
+    """
+    if benchmark_density is None or not benchmark_density:
+        return None
+    if city_density is None:
+        city_density = 0.0
+    ratio = city_density / benchmark_density
+    return int(round(max(0.0, min(100.0, 50 - (ratio - 1) * 50))))
+
+
+def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment: dict[str, int],
+                    density_by_segment: dict[str, float], benchmarks: dict[str, float]) -> dict:
     s_invest = score_investment_fit(budget, franchise["investment_min"], franchise["investment_max"])
     s_demand = score_city_demand(city.get("population"))
     s_power  = score_purchasing_power(city.get("purchasing_power_index"))
     s_survival = survival_by_segment.get(franchise["segment"])
+    s_gap = score_market_gap(density_by_segment.get(franchise["segment"]), benchmarks.get(franchise["segment"]))
 
-    available = [s for s in (s_invest, s_demand, s_power, s_survival) if s is not None]
+    available = [s for s in (s_invest, s_demand, s_power, s_survival, s_gap) if s is not None]
     total = round(sum(available) / len(available), 1) if available else 0.0
 
     return {
@@ -146,9 +197,9 @@ def compute_scores(city: dict, franchise: dict, budget: int, survival_by_segment
         "score_city_demand":    s_demand,
         "score_purchasing_power": s_power,
         "score_survival_risk":  s_survival,
+        "score_market_gap":     s_gap,
         "score_city_growth":    None,  # sem fonte de dado ainda (population_growth_rate não é preenchido por nenhum importador)
-        "score_competition":    None,  # depende de city_segments, que continua vazio (diferente de company_lifecycle)
-        "score_market_gap":     None,  # idem
+        "score_competition":    None,  # precisaria de presença por marca — ver nota no topo do arquivo
         "score_total":          int(round(total)),
     }
 
@@ -164,10 +215,12 @@ def recommend(supabase, city: dict, budget: int, segment: str | None, top_n: int
         return []
 
     survival_by_segment = fetch_survival_by_segment(supabase, city["id"])
+    density_by_segment = fetch_active_density_by_segment(supabase, city["id"], city.get("population"))
+    benchmarks = fetch_density_benchmarks(supabase)
 
     results = []
     for f in franchises:
-        scores = compute_scores(city, f, budget, survival_by_segment)
+        scores = compute_scores(city, f, budget, survival_by_segment, density_by_segment, benchmarks)
         results.append({**f, **scores})
 
     results.sort(key=lambda r: r["score_total"], reverse=True)
@@ -218,7 +271,8 @@ def print_results(city: dict, budget: int, results: list[dict]) -> None:
         for label, key in [("fit investimento", "score_investment_fit"),
                             ("demanda cidade", "score_city_demand"),
                             ("poder de compra", "score_purchasing_power"),
-                            ("sobrevida do segmento", "score_survival_risk")]:
+                            ("sobrevida do segmento", "score_survival_risk"),
+                            ("gap de mercado", "score_market_gap")]:
             v = r[key]
             breakdown.append(f"{label}={v}" if v is not None else f"{label}=n/d")
         print(f"     {DIM}{' | '.join(breakdown)}{RESET}")
